@@ -1,0 +1,182 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # 1. BASE DE DONNÉES (Connaissances)
+  # ==========================================
+  postgres:
+    image: postgres:15
+    container_name: cdss_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks:
+      - cdss-network
+
+  # ==========================================
+  # 2. INTERFACE DB (Admin)
+  # ==========================================
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: cdss_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@cdss.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - cdss-network
+
+  # ==========================================
+  # 3. AIRFLOW CORE (Init & Setup)
+  # ==========================================
+  airflow-init:
+    build: .  # Utilise notre Dockerfile custom
+    container_name: cdss_airflow_init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW_UID: ${AIRFLOW_UID:-50000}
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD}
+      # Variables pour les scripts Python internes
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c "airflow db init && airflow users create --username airflow --firstname Admin --lastname CDSS --role Admin --email admin@cdss.com --password airflow"
+    networks:
+      - cdss-network
+
+  # ==========================================
+  # 4. AIRFLOW WEBSERVER (UI)
+  # ==========================================
+  airflow-webserver:
+    build: .
+    container_name: cdss_airflow_webserver
+    command: webserver
+    ports:
+      - "8081:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW_UID: ${AIRFLOW_UID:-50000}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    networks:
+      - cdss-network
+
+  # ==========================================
+  # 5. AIRFLOW SCHEDULER (Le Chef d'Orchestre)
+  # ==========================================
+  airflow-scheduler:
+    build: .
+    container_name: cdss_airflow_scheduler
+    command: scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW_UID: ${AIRFLOW_UID:-50000}
+      # CRITIQUE : Variables nécessaires pour les DAGs
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    networks:
+      - cdss-network
+
+  # ==========================================
+  # 6. SPARK MASTER (Calcul Distribué)
+  # ==========================================
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: cdss_spark_master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./data:/opt/spark/data
+      - ./spark-apps:/opt/spark/apps
+    networks:
+      - cdss-network
+
+  # ==========================================
+  # 7. SPARK WORKER (Exécutant)
+  # ==========================================
+  spark-worker:
+    image: apache/spark:3.5.0
+    container_name: cdss_spark_worker
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    volumes:
+      - ./data:/opt/spark/data
+    networks:
+      - cdss-network
+
+volumes:
+  postgres_data:
+
+networks:
+  cdss-network:
+    driver: bridge
