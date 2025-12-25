@@ -1,7 +1,9 @@
+version: '3.8'
+
 services:
-  # ---------------------------------------------------
-  # SERVICE 1: POSTGRESQL (Base de Connaissances)
-  # ---------------------------------------------------
+  # ==========================================
+  # 1. BASE DE DONNÉES (Connaissances)
+  # ==========================================
   postgres:
     image: postgres:15
     container_name: cdss_postgres
@@ -22,9 +24,9 @@ services:
     networks:
       - cdss-network
 
-  # ---------------------------------------------------
-  # SERVICE 2: PGADMIN (Gestion DB)
-  # ---------------------------------------------------
+  # ==========================================
+  # 2. INTERFACE DB (Admin)
+  # ==========================================
   pgadmin:
     image: dpage/pgadmin4
     container_name: cdss_pgadmin
@@ -38,11 +40,11 @@ services:
     networks:
       - cdss-network
 
-  # ---------------------------------------------------
-  # SERVICE 3: AIRFLOW INIT (Initialisation)
-  # ---------------------------------------------------
+  # ==========================================
+  # 3. AIRFLOW CORE (Init & Setup)
+  # ==========================================
   airflow-init:
-    image: apache/airflow:2.7.3
+    build: .  # Utilise notre Dockerfile custom
     container_name: cdss_airflow_init
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -54,6 +56,11 @@ services:
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD}
+      # Variables pour les scripts Python internes
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: ${POSTGRES_PORT}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -67,11 +74,11 @@ services:
     networks:
       - cdss-network
 
-  # ---------------------------------------------------
-  # SERVICE 4: AIRFLOW WEBSERVER (Interface Web)
-  # ---------------------------------------------------
+  # ==========================================
+  # 4. AIRFLOW WEBSERVER (UI)
+  # ==========================================
   airflow-webserver:
-    image: apache/airflow:2.7.3
+    build: .
     container_name: cdss_airflow_webserver
     command: webserver
     ports:
@@ -82,9 +89,6 @@ services:
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW_UID: ${AIRFLOW_UID:-50000}
-
-      _PIP_ADDITIONAL_REQUIREMENTS: "python-dotenv"
-
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -108,11 +112,11 @@ services:
     networks:
       - cdss-network
 
-  # ---------------------------------------------------
-  # SERVICE 5: AIRFLOW SCHEDULER (Orchestrateur)
-  # ---------------------------------------------------
+  # ==========================================
+  # 5. AIRFLOW SCHEDULER (Le Chef d'Orchestre)
+  # ==========================================
   airflow-scheduler:
-    image: apache/airflow:2.7.3
+    build: .
     container_name: cdss_airflow_scheduler
     command: scheduler
     environment:
@@ -121,9 +125,7 @@ services:
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW_UID: ${AIRFLOW_UID:-50000}
-
-      _PIP_ADDITIONAL_REQUIREMENTS: "python-dotenv"
-
+      # CRITIQUE : Variables nécessaires pour les DAGs
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -142,13 +144,12 @@ services:
     networks:
       - cdss-network
 
-  # ---------------------------------------------------
-  # SPARK MASTER (Image Officielle)
-  # ---------------------------------------------------
+  # ==========================================
+  # 6. SPARK MASTER (Calcul Distribué)
+  # ==========================================
   spark-master:
     image: apache/spark:3.5.0
     container_name: cdss_spark_master
-    # Commande spécifique pour lancer le Master avec l'image officielle
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     ports:
       - "8080:8080"
@@ -159,13 +160,12 @@ services:
     networks:
       - cdss-network
 
-  # ---------------------------------------------------
-  # SPARK WORKER (Image Officielle)
-  # ---------------------------------------------------
+  # ==========================================
+  # 7. SPARK WORKER (Exécutant)
+  # ==========================================
   spark-worker:
     image: apache/spark:3.5.0
     container_name: cdss_spark_worker
-    # Commande spécifique pour lancer le Worker et le connecter au Master
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
       - spark-master
